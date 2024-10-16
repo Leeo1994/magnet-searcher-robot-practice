@@ -1,0 +1,37 @@
+// Create your stop beep variable in this "global" space.
+
+unsigned long beep_stop_ts; // turn stop timestamp
+
+void setup() {
+  // Activate a beep in setup, which should only
+  // occur once when you turn the robot on.
+  setBeep(250);
+}
+
+void loop() {
+  // Call your checkBeep() function iteratively
+  // (every loop), which should catch and turn off
+  // your beeping after the requested duration.
+  checkBeep();
+}
+
+void setBeep(unsigned long beep_duration_ms) { //beep_duration --> turn angle
+  // Add the requested duration to the current
+  // count of millis(), and save this into
+  // the global variable you created.
+
+  //activate turn
+
+  beep_stop_ts = beep_duration_ms + millis(); //using a call to millis(), add the requested duration_ms to the results of millis()
+} //time stamp for the turn started
+
+void checkBeep() {
+  // Check if the current count of millis() is
+  // now greater than the value you saved in
+  // your global variable. If it is, stop the beep.
+  if (millis() > beep_stop_ts) {
+    
+    //stopBeep();  // Add your beep stopping logic here
+  
+  }
+}
