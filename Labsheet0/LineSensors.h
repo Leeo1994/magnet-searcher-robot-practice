@@ -45,15 +45,15 @@ class LineSensors_c {
     // Variables to store calibration constants.
     // Make use of these as a part of the exercises
     // in labsheet 2.
-    float minimum[ NUM_SENSORS ];
-    float maximum[ NUM_SENSORS ];
-    float scaling[ NUM_SENSORS ];
+    float minimum[NUM_SENSORS]; //UPDATE ALL THREE TO CONTAIN {dn1, dn2, dn3, dn4, dn5}?
+    float maximum[NUM_SENSORS];
+    float scaling[NUM_SENSORS];
 
     // Variable to store the calculated calibrated
     // (corrected) readings. Needs to be updated via
     // a function call, which is completed in
     // labsheet 2.
-    float calibrated[ NUM_SENSORS ];
+    float calibrated[ NUM_SENSORS ]; //UPDATE TO CONTAIN {dn1, dn2, dn3, dn4, dn5}?
 
     // Constructor, must exist.
     LineSensor_c() {
@@ -150,7 +150,7 @@ class LineSensors_c {
           }
         }
 
-        delay(10); //lastReading = millis();
+        //delay(10); //lastReading = millis();
     }
 
     //printing minimum and maximum
@@ -198,7 +198,7 @@ class LineSensors_c {
       
       readSensorsADC(); //Get latest readings (raw values)
       
-      Serial.print("Calibrated:");
+      //Serial.println("Calibrated:");
       
       // Apply calibration values, store in calibrated[]
       for ( int sensor = 0; sensor < NUM_SENSORS; sensor++ ) {
@@ -220,18 +220,23 @@ class LineSensors_c {
       }
     } // End of printCalibrated()
 
-bool isOnLine(int which_sensor){//     <-------------------------------------------------------------------------reached this pt. When calibrated[n] = 1 --> sensor dn[n] on line. SET THRESHOLD TO 0.8
-  if (calibrated[which_sensor] >= 0.8){
-  //Serial.println(which_sensor);
-  //Serial.print("sensor is on line");
-  return true;
-  }
-  else 
-  return false;
-  }
+bool isOnLine(){//     <-------------------------------------------------------------------------reached this pt. When calibrated[n] = 1 --> sensor dn[n] on line. SET THRESHOLD TO 0.8 WORKS FOR ALL SENSORS NOW
+     // Check sensor 0 and sensor 4 with a specific threshold
+    if (calibrated[0] >= 0.9 || calibrated[4] >= 0.9) { // Higher threshold for less responsive sensors
+        return true; // Return true if either sensor 0 or sensor 4 detects a line
+    }
+
+    // Loop through the remaining sensors (1 to 3)
+    for (int sensor = 1; sensor < NUM_SENSORS - 1; sensor++) {
+        if (calibrated[sensor] >= 0.8) {
+            return true; // Return true if any of the other sensors detect a line
+        }
+    }
+
+    return false; // Return false if no sensors are on the line
+}
+
 //     <---------------------------------------------------------------------------------------------------------Sensor 1 fucked. --> need to check why
-
-
 
     // Part of the Advanced Exercises for Labsheet 2
     void initialiseForDigital() {
