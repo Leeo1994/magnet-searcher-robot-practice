@@ -1,0 +1,501 @@
+// OLD TEMPLATE
+//Github link: https://github.com/paulodowd/EMATM0054_53/tree/main?tab=readme-ov-file#assessment-2-projects
+
+//================================ [INCLUDE] =========================================
+
+#include "Motors.h"         // Labsheet 1
+#include "PID.h"            // Labsheet 1 - Advanced - no need to use pid
+#include "LineSensors.h"    // Labsheet 2
+#include "Magnetometer.h" // Labsheet 3
+#include "Kinematics.h"     // Labsheet 4
+#include "Encoders.h"     //For encoder counts [doesnt need modifying]
+
+
+//================================= [DEFINITIONS DECLARATIONS] =========================================
+
+#define BUZZER_PIN 6
+#define TURN_THRESHOLD 0.1
+#define DISTANCE_THRESHOLD 0.05
+void checkMag();
+void setRev(int ms);
+bool checkTurn();
+void setTurn(float target_angle);
+void updatePose();
+void turnToOrigin();
+void distance2Origin(float origin_x, float origin_y);
+
+//============================ [CLASS INSTANCES] ======================================
+
+//Instance of a class to operate motors.
+Motors_c motors;
+
+//Instance of a class to operate the line
+// sensors to measure the surface reflectance.
+LineSensors_c line_sensors;
+
+//Instance of a class to operate the magnetometer.
+Magnetometer_c magnetometer;
+
+//Instance of a class to operate LIS3MDL
+LIS3MDL mag;
+
+//Instance of a class to estimate the pose of the robot.
+Kinematics_c pose;
+
+//============================ [GLOBAL VARIABLES] ====================================
+
+//bool isCalibrating = false;
+float origin_y;
+float origin_x;
+bool isTurning = false; //flag for turning
+unsigned long online_ts; // online time stamp
+unsigned long led_blink_ms; //how frequently to blink?(ms)(interval)
+float left;
+float right;
+bool motorStopped; //flag if motors stopped
+float magnitude;
+float target_angle;
+unsigned long current_millis = 0;
+unsigned long last_millis = 0;
+unsigned long search_start_ts;
+bool magFound = false;
+bool lineEncountered = false;
+unsigned long turn_start_time;  // Time when the spin starts
+//float faceHome = 0;
+bool facingOrigin = false;
+unsigned long last_led = 0;
+bool ledState = LOW;
+const unsigned long driveTime = 2000; // Set drive time in milliseconds
+unsigned long startTime = 0; // Variable to store the start time
+bool driving = false; // State variable to track if the bot is driving
+
+
+//================================= [STATES] =========================================
+
+#define STATE_CALIBRATION      0
+#define STATE_LEAVE_START      1
+#define STATE_SEARCH_MAGNET    2
+#define STATE_AVOID_LINE       3
+#define STATE_RETURN_TO_START  4 //return to start
+#define STATE_MAGNET_FOUND     5 //fix location and encapsulate magnet
+#define STATE_RETURN_TO_MAG    6
+#define DEBUG                  7
+int state; //track active state
+
+void setup() {
+
+  //=============================== [INITIATION] =======================================
+
+  pinMode( BUZZER_PIN, OUTPUT ); //Setup up the buzzer as an output
+
+  motors.initialise(); //Setup motors.
+
+  line_sensors.initialiseForADC(); //Setup the line sensors
+
+  setupEncoder0(); //Activate encoder sensors to measure the wheel rotation. Encoder counts counted automatically.
+  setupEncoder1();
+
+  pose.initialise(0, 0, 0); //Setup the pose (kinematics).
+
+  Serial.begin(9600); //Set baud
+
+  delay(2000);
+
+  magnetometer.initialise(); //Setup the magnetometer
+
+  Serial.println("*** READY ***");
+
+  //=============================== [CALIBRATION] ======================================
+
+  state = STATE_CALIBRATION;
+  Serial.print(state);
+
+  if (state == STATE_CALIBRATION) {
+
+    //isCalibrating = true;
+
+    line_sensors.set_minmax(); //Sets initial line-sensor values to min: 1023 ; max: 0
+    magnetometer.set_minmax(); //Sets initial magnetometer values to min: 9999 ; max: -9999 <-------------- COMPLETE
+    left = -23.0;
+    right = 24.0;
+    motors.setPWM(left, right);  //Start spinning in place
+
+    //Start sensor calibration
+    for (int i = 0; i < 200; i++) {  //i for iteration //Spin for a certain number of iterations --> Total delay time[ms](4000) = Number of iterations(200) * Delay per iteration(20) <-----------[DOESNT COMPLETE A 360 SPIN]
+
+      line_sensors.calib(); //Perform a single line-sensor calibration step
+
+      delay(10);
+
+      magnetometer.calib(); //Perform a single magnetometer calibration step
+
+      delay(10); //Small delay to allow sensor reading
+
+      pose.update(); //updates pose during setup spin
+
+    }
+
+    //Calibration is done!
+    Serial.println("Calibration complete");
+
+    left = 0.0;
+    right = 0.0;
+    motors.setPWM(left, right); //Stop motors
+
+    //record origin
+    origin_x = pose.x;
+    origin_y = pose.y;
+    float setTheta = pose.theta; //saving initial theta
+
+
+
+    //line_sensors.print_minmax(); //print maximum and mimum - Line Sensors
+
+    line_sensors.calcScaling(); //calculate scaling (range) - Line Sensors
+
+    //magnetometer.print_minmax(); //print maximum and mimum - Magnetometer x, y, z.
+    //NO MAGNET:
+    //MAX [X: -5778, Y: -4702, Z: -9870] <---------- WEIRD.
+    //MIN [X: -5858, Y: -4784, Z: -10023]
+
+    magnetometer.calcScaling(); //calculate scaling - Magnetometer
+    //NO MAGNET:
+    //Range(max-min) = [X: 80, Y: 82, Z: 153]             <-------- [MAX - MIN] CALC FINE
+    //offset(mid-point) = [X: -5818, Y: -4743, Z: -9946.5]   <-------- [MIN + (RANGE / 2)] CALC FINE
+    //scaling(normalized) = [X: 0.03, Y: 0.02, Z: 0.01]    <-------- [1 / (RANGE / 2)] CALC wrong presenting 0.015 as 0.02
+
+    delay(100);
+
+    //isCalibrating = false;
+    state = STATE_LEAVE_START;
+    //state = DEBUG;
+    //Serial.print("state: leave start");
+
+  } //End of state == calibration
+
+
+} //End of Setup()
+
+void loop() {
+
+  // =========== constant pose + magnetometer + line sensor update ============
+
+  current_millis = millis();
+
+  if (current_millis - last_millis >= 20) {
+
+    //a fixed interval 20ms.
+    pose.update();
+
+    checkMag();
+    line_sensors.calcCalibratedADC();
+
+    last_millis = current_millis; //updating current time
+  }
+
+
+
+  //=============================== [LEAVE_START] =====================================
+
+
+  //go to grid
+  if (state == STATE_LEAVE_START) {
+
+    const float grid_x = 30;  // <--- within grid
+    const float grid_y = 12;  // <--- within grid
+
+    /*
+             if (isTurning) { ----> fixing turn
+
+               updatePose(); // Keep updating the pose while turning
+
+               if (checkTurn()) {
+
+                 isTurning = false; // Turn completed
+                 // Transition to next state if needed
+                 state = DEBUG; // Example transition
+               }
+             }
+           }
+         if (correctPose == true){ //if pose update complete
+    */
+
+    //Serial.println("x:");
+    //Serial.println(pose.x, 4);
+
+    //Serial.println("y:");
+    //Serial.println(pose.y, 4);
+
+    if (pose.x >= grid_x || pose.y >= grid_y) {
+
+      motors.setPWM(0, 0);
+
+      search_start_ts = millis();
+
+      state = STATE_SEARCH_MAGNET;
+
+      Serial.print(state);
+    }
+
+    else if (pose.x < grid_x || pose.y < grid_y)
+
+      motors.setPWM(25, 25);
+    //(x,y) (276, 28)
+
+    /*
+      mapping of grid
+      do not get out of x = 227
+    */
+  }
+  //set destination when the grid starts - define grid boundaries
+
+
+
+
+  //=============================== [SEARCH_MAGNET] ====================================
+
+  if (state == STATE_SEARCH_MAGNET) {
+
+    //Serial.println("State: Searching Magnet");
+
+    // line detected - stop the robot
+    if (line_sensors.isOnLine()) {
+
+      motors.setPWM(0, 0);   // stop motors
+
+      lineEncountered = true;  // Set flag to indicate line was encountered
+
+      turn_start_time = millis();  // Record the time the spin starts
+
+      state = STATE_AVOID_LINE;  // Change to spin state
+    }
+    else {
+
+      //continue searching
+      //      int randL = (20, 25);
+      //      int randR = (20, 25);
+      motors.setPWM(25, 25);  //forward with reandom little turns
+
+      //checks magnitude threshold - beeps when magnet near
+      if (magFound == false) { // if magnet not found
+
+        if (millis() - search_start_ts >= 8000/*120000*/) { //wait 1 min and see
+          motors.setPWM(0, 0);
+          state = DEBUG;//========================================================================| ?DEbug
+          //state = STATE_RETURN_TO_START;
+          //Serial.print(state);
+        }
+      }
+      else if (magFound == true) {
+        motors.setPWM(0, 0);
+
+        state = STATE_MAGNET_FOUND;
+      }
+    }
+
+  }//End of if state == STATE_SEARCH_MAGNET
+
+  /*
+      ===========================================================================================================================
+      CURRENT BEHAVIOR - when ONLINE doesnt stop. turnins while driving forward. if buzzer on - buzzer sounds grainy and unstable
+      ===========================================================================================================================
+  */
+
+  //============================= [STATE_AVOID_LINE] ===================================
+
+  if (state == STATE_AVOID_LINE) {
+    //Serial.println("State: Avoid Line");
+
+    unsigned long turn_duration = random(300, 1000);
+
+    if (millis() - turn_start_time < turn_duration) {
+
+      motors.setPWM(-25, 25);  // Set one motor forward and the other backward to spin
+    }
+    else {
+      // 3. Stop the spin after the spin_duration has passed
+      motors.setPWM(0, 0);  // Stop motors after spinning
+      state = STATE_SEARCH_MAGNET;  // Return to search state or transition to another state
+    }
+  }
+
+  //================================ [MAGNET_FOUND] ====================================
+
+  //record magnet coordinations
+  //cover magnet completely
+
+  //============================== [RETURN_TO_START] ===================================
+
+  if (state == STATE_RETURN_TO_START) {
+
+//turnToOrigin();
+
+
+static float currentX = pose.x;
+static float currentY = pose.y;
+float currentTheta = pose.theta;
+    
+    float thetaH = atan2(currentY, currentX); //returns radians
+    //Serial.println("Angle Home");
+    //Serial.println(thetaH);
+    
+    thetaH = (thetaH * (180 / PI)); //transforms radians --> degrees 1578 but says inf
+   
+    float thetaI = (currentTheta * (180 / PI)); //transforms radians --> degrees
+   
+  static float faceHome = fmod((thetaH - thetaI + 360), 360);  // Ensures 0 <= faceHome < 360
+   
+Serial.println("faceHome");
+Serial.println(faceHome);
+
+//setTurn(135);
+setTurn(faceHome);
+
+motors.setPWM(0,0);
+  
+  //state == STATE_DRIVE_HOME;
+  }
+
+  //============================ [STATE_RETURN_TO_MAG] =================================
+
+  //return to recorded magnet location
+
+
+  //================================== [DEBUG] =======================================
+
+  if (state == DEBUG) {
+
+    //
+
+    static float currentX = pose.x;
+    static float currentY = pose.y;
+    float currentTheta = pose.theta;
+    
+    float thetaH = atan2(currentY, currentX) * (180 / PI); // Angle to origin
+    float thetaI = (currentTheta * (180 / PI)); // Current angle
+    float faceHome = fmod((thetaH - thetaI + 360), 360); // Normalize angle
+
+
+
+    setTurn(faceHome); // Turn towards origin
+
+    setTurn(135);
+//motors.setPWM(0,0);
+  }
+  
+  //================================= [FUNCTIONS] ======================================
+}// End of loop()
+
+
+//_____________________[checkMag]_____________________
+//checks magnitude threshold - beeps when magnet near
+void checkMag() {
+
+  //Serial.println ("magnitude:");
+  magnitude = magnetometer.calcCalibratedMag(); //get newest calibrated readings + magnitude values
+  // MAGNITUDE VALUES ; No magnet:(2 ~ 10) ; Magnet detected(15 ~ 300)
+
+  if (magnetometer.detect_threshold() == true) {
+
+    motors.setPWM(0.0, 0.0);
+
+    analogWrite(BUZZER_PIN, 200); //buzzer on
+
+    return magFound = true;
+
+  }
+  else
+    analogWrite(BUZZER_PIN, 0); //buzzer off
+
+  return magFound = false;
+}
+
+
+//______________________[blinkLeds]_______________________
+ 
+void blinkLeds() {
+  
+  if (millis() - last_led >= 100) {  // 100ms interval
+    
+    last_led = millis();
+    
+    ledState = !ledState;              // Toggle LED state
+    
+    digitalWrite(LED_BUILTIN, ledState);   // Write new LED state
+  }
+}
+
+//______________________[originDistance]_______________________
+ 
+void distance2Origin(float origin_x, float origin_y){
+ 
+ float distanceToOrigin = sqrt(pow(pose.x - origin_x, 2) + pow(pose.y - origin_y, 2));
+
+  // Threshold for being "close enough" to the origin
+  if (distanceToOrigin < DISTANCE_THRESHOLD) {
+    // Stop when close enough to the origin
+    motors.setPWM(0, 0);
+    Serial.println("Arrived at the origin.");
+  } 
+  else {
+    // Move towards the origin if not close enough
+    motors.setPWM(20, 20);  // Move forward with the specified speed
+    Serial.println("Driving towards the origin...");
+  }
+}
+
+//______________________[setTurn]_______________________
+
+void setTurn(float target_angle) {
+
+  // Convert target angle to radians
+  float target_angle_rad = -target_angle * (PI / 180.0);
+
+  // Calculate the angular difference and normalize it
+  float angle_diff = pose.theta - target_angle_rad;
+
+  // Normalize the angular difference to [-PI, PI]
+  angle_diff = atan2(sin(angle_diff), cos(angle_diff));  // This normalizes the angle
+
+  Serial.println("theta:");
+  Serial.println(pose.theta);
+  Serial.println("angle_diff:");
+  Serial.println(angle_diff);
+
+  if (abs(angle_diff) > TURN_THRESHOLD) {
+    // Continue spinning until the target angle is reached
+    
+    if (angle_diff > 0) {
+      // Turn right --> negative theta
+      motors.setPWM(30, -30);
+      
+    } else if(angle_diff < 0){
+      // Turn left --> positive theta
+      motors.setPWM(-30, 30);
+    }
+
+    //Serial.println("Spinning to reach target angle");
+    
+  } else {
+    // Stop spinning when the target angle is reached
+    motors.setPWM(0, 0);  // Stop motors
+    //Serial.println("Reached target angle");
+    Serial.println("theta");
+    Serial.println(pose.theta);
+    bool facingOrigin = true;
+  }
+}
+
+//______________________[updatePose]_______________________
+
+//updates pose at a 20ms interval
+void updatePose() {
+
+  if (current_millis - last_millis >= 20) {
+
+    // Instruct the kinematics to perform an update of the robot position recommended at a fixed interval 20ms.
+    pose.update();
+
+    last_millis = current_millis;
+  }
+}
